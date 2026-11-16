@@ -1,0 +1,461 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  deleteThread,
+  fetchThreadMessages,
+  fetchThreads,
+  streamChat,
+  uploadDocuments,
+} from "./api";
+import {
+  Bot,
+  User,
+  Plus,
+  Trash2,
+  Square,
+  ArrowUp,
+  MessageSquare,
+  AlertCircle,
+  X,
+  Paperclip,
+  FileText,
+  Loader2,
+  CheckCircle2,
+} from "lucide-react";
+import "./App.css";
+
+export default function App() {
+  const [threads, setThreads] = useState([]);
+  const [activeThreadId, setActiveThreadId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [activeFiles, setActiveFiles] = useState([]);
+  const [input, setInput] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
+  const [isLoadingThread, setIsLoadingThread] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState("");
+  const [error, setError] = useState("");
+
+  const messagesEndRef = useRef(null);
+  const abortRef = useRef(null);
+  const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  async function loadThreads() {
+    try {
+      const list = await fetchThreads();
+      setThreads(list);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => {
+    loadThreads();
+  }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streamingContent]);
+
+  async function handleSelectThread(threadId) {
+    if (isStreaming || threadId === activeThreadId) return;
+    setError("");
+    setUploadSuccess("");
+    setActiveThreadId(threadId);
+    setIsLoadingThread(true);
+    setStreamingContent("");
+    try {
+      const { messages: history, files } = await fetchThreadMessages(threadId);
+      setMessages(history);
+      setActiveFiles(files);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoadingThread(false);
+    }
+  }
+
+  function handleNewChat() {
+    if (isStreaming) return;
+    setError("");
+    setUploadSuccess("");
+    setActiveThreadId(null);
+    setMessages([]);
+    setActiveFiles([]);
+    setStreamingContent("");
+    textareaRef.current?.focus();
+  }
+
+  async function handleDeleteThread(e, threadId) {
+    e.stopPropagation();
+    if (isStreaming) return;
+    try {
+      await deleteThread(threadId);
+      setThreads((prev) => prev.filter((t) => t.id !== threadId));
+      if (activeThreadId === threadId) {
+        handleNewChat();
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function handleStop() {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    if (streamingContent) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: streamingContent },
+      ]);
+    }
+    setStreamingContent("");
+    setIsStreaming(false);
+  }
+
+  async function handleFileUpload(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    setError("");
+    setUploadSuccess("");
+    setIsUploading(true);
+
+    try {
+      const res = await uploadDocuments(files, activeThreadId);
+      if (!activeThreadId && res.thread_id) {
+        setActiveThreadId(res.thread_id);
+      }
+      setActiveFiles(res.all_thread_files || []);
+      setUploadSuccess(
+        `Uploaded & indexed ${res.uploaded_files.length} file(s) into chat memory.`
+      );
+      await loadThreads();
+    } catch (err) {
+      setError(err.message || "Failed to upload document");
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleSend(e) {
+    e?.preventDefault();
+    const trimmed = input.trim();
+    if (!trimmed || isStreaming) return;
+
+    setError("");
+    setUploadSuccess("");
+    setInput("");
+    setIsStreaming(true);
+    setStreamingContent("");
+
+    const userMsg = { role: "user", content: trimmed };
+    setMessages((prev) => [...prev, userMsg]);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let accumulated = "";
+    let currentThreadId = activeThreadId;
+
+    try {
+      await streamChat({
+        threadId: activeThreadId,
+        message: trimmed,
+        signal: controller.signal,
+        onMeta: (evt) => {
+          if (evt.thread_id && !currentThreadId) {
+            currentThreadId = evt.thread_id;
+            setActiveThreadId(evt.thread_id);
+          }
+        },
+        onToken: (token) => {
+          accumulated += token;
+          setStreamingContent((prev) => prev + token);
+        },
+        onError: (errMsg) => {
+          setError(errMsg || "Streaming error encountered");
+        },
+      });
+
+      if (accumulated) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: accumulated },
+        ]);
+      }
+      setStreamingContent("");
+      await loadThreads();
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        setError(err.message || "Failed to stream message");
+      }
+    } finally {
+      abortRef.current = null;
+      setIsStreaming(false);
+      setStreamingContent("");
+    }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  const activeThread = threads.find((t) => t.id === activeThreadId);
+
+  return (
+    <div className="app-shell">
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div className="brand-row">
+            <span className="brand-dot" />
+            <span className="brand">Agentic RAG Chat</span>
+          </div>
+          <button
+            type="button"
+            className="new-chat-btn"
+            onClick={handleNewChat}
+            disabled={isStreaming}
+          >
+            <Plus size={16} />
+            <span>New Chat</span>
+          </button>
+        </div>
+
+        <div className="thread-list">
+          {threads.length === 0 ? (
+            <div className="thread-empty">No conversations yet</div>
+          ) : (
+            threads.map((thread) => (
+              <div
+                key={thread.id}
+                role="button"
+                tabIndex={0}
+                className={`thread-item ${
+                  thread.id === activeThreadId ? "active" : ""
+                }`}
+                onClick={() => handleSelectThread(thread.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    handleSelectThread(thread.id);
+                  }
+                }}
+              >
+                <MessageSquare size={15} className="thread-icon" />
+                <div className="thread-info-stack">
+                  <span className="thread-title">{thread.title}</span>
+                  {thread.files && thread.files.length > 0 && (
+                    <span className="thread-file-badge">
+                      <FileText size={10} />
+                      {thread.files.length} file(s)
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="delete-thread-btn"
+                  title="Delete thread"
+                  onClick={(e) => handleDeleteThread(e, thread.id)}
+                  disabled={isStreaming}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+
+      {/* Main Chat Area */}
+      <main className="chat-main">
+        <header className="chat-header">
+          <div className="chat-header-info">
+            <h1>{activeThread ? activeThread.title : "New Chat"}</h1>
+            {activeThreadId && (
+              <span className="thread-badge" title={activeThreadId}>
+                ID: {activeThreadId.slice(0, 8)}
+              </span>
+            )}
+          </div>
+          <div className="chat-header-actions">
+            {isStreaming && (
+              <div className="streaming-badge">
+                <span className="pulse-dot" />
+                Streaming
+              </div>
+            )}
+          </div>
+        </header>
+
+        {/* Active Files Pill Banner */}
+        {activeFiles.length > 0 && (
+          <div className="thread-context-banner">
+            <span className="context-label">Chat Memory Context:</span>
+            <div className="file-pills">
+              {activeFiles.map((file, idx) => (
+                <span key={idx} className="file-pill">
+                  <FileText size={12} />
+                  {file}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Error or Success Banners */}
+        {error && (
+          <div className="error-banner">
+            <div className="error-msg">
+              <AlertCircle size={16} />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              className="error-close"
+              onClick={() => setError("")}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {uploadSuccess && (
+          <div className="success-banner">
+            <div className="success-msg">
+              <CheckCircle2 size={16} />
+              <span>{uploadSuccess}</span>
+            </div>
+            <button
+              type="button"
+              className="error-close"
+              onClick={() => setUploadSuccess("")}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {/* Messages */}
+        <div className="messages-container">
+          {isLoadingThread ? (
+            <div className="empty-state">Loading conversation...</div>
+          ) : messages.length === 0 && !isStreaming ? (
+            <div className="empty-state">
+              <h2>Upload & Ask Anything</h2>
+              <p>
+                Attach a PDF, CSV, Markdown, or text file using the clip icon
+                below, or type your question to start.
+              </p>
+            </div>
+          ) : (
+            <>
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`message-row ${msg.role}`}>
+                  <div className="avatar">
+                    {msg.role === "user" ? <User size={16} /> : <Bot size={16} />}
+                  </div>
+                  <div className="message-bubble">
+                    <div className="message-content">{msg.content}</div>
+                  </div>
+                </div>
+              ))}
+
+              {/* Streaming token bubble */}
+              {isStreaming && (
+                <div className="message-row assistant streaming">
+                  <div className="avatar">
+                    <Bot size={16} />
+                  </div>
+                  <div className="message-bubble">
+                    <div className="message-content">
+                      {streamingContent || (
+                        <span className="thinking-text">
+                          Analyzing context & generating...
+                        </span>
+                      )}
+                      <span className="cursor-blink" />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Composer with Attachment support */}
+        <form className="composer-wrapper" onSubmit={handleSend}>
+          <div className="composer-box">
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.csv,.md,.markdown,.txt,.json,.py,.log"
+              style={{ display: "none" }}
+              onChange={handleFileUpload}
+            />
+
+            <button
+              type="button"
+              className="attach-btn"
+              title="Upload PDF, CSV, MD, or text files to chat memory"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading || isStreaming}
+            >
+              {isUploading ? (
+                <Loader2 size={18} className="spin-icon" />
+              ) : (
+                <Paperclip size={18} />
+              )}
+            </button>
+
+            <textarea
+              ref={textareaRef}
+              rows={2}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                isUploading
+                  ? "Indexing document..."
+                  : "Ask a question about your documents... (Enter to send)"
+              }
+              disabled={isStreaming}
+            />
+
+            <div className="composer-actions">
+              {isStreaming ? (
+                <button
+                  type="button"
+                  className="action-btn stop-btn"
+                  onClick={handleStop}
+                  title="Stop generating"
+                >
+                  <Square size={14} fill="currentColor" />
+                  <span>Stop</span>
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="action-btn send-btn"
+                  disabled={!input.trim() || isUploading}
+                  title="Send message"
+                >
+                  <ArrowUp size={16} />
+                </button>
+              )}
+            </div>
+          </div>
+        </form>
+      </main>
+    </div>
+  );
+}
