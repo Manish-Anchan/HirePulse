@@ -24,6 +24,15 @@ class convo(TypedDict, total=False):
 
 # 2. Checkpointer setup (SQLite persistence scoped to thread_id)
 conn = sqlite3.connect(database=str(DB_PATH), check_same_thread=False)
+with conn:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hidden_threads (
+            thread_id TEXT PRIMARY KEY,
+            hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
 checkpointer = SqliteSaver(conn=conn)
 
 
@@ -90,14 +99,32 @@ def safe_trim(msgs: list[BaseMessage], max_tokens: int = 2500) -> list[BaseMessa
     return msgs[-8:] if len(msgs) >= 8 else msgs
 
 
-# 6. Thread retrieval helpers
-def get_threads() -> list[str]:
-    """List all unique thread IDs recorded in the SQLite checkpointer."""
+# 6. Thread retrieval & soft-delete helpers
+def hide_thread(thread_id: str) -> None:
+    """Soft-delete: hide a thread from the frontend while preserving history in the database."""
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO hidden_threads (thread_id) VALUES (?)",
+            (str(thread_id),),
+        )
+
+
+def get_hidden_threads() -> set[str]:
+    """Retrieve all thread IDs that have been hidden/removed from the frontend."""
+    with conn:
+        cur = conn.cursor()
+        cur.execute("SELECT thread_id FROM hidden_threads")
+        return {row[0] for row in cur.fetchall()}
+
+
+def get_threads(include_hidden: bool = False) -> list[str]:
+    """List unique thread IDs recorded in the SQLite checkpointer, excluding hidden threads by default."""
+    hidden = set() if include_hidden else get_hidden_threads()
     all_threads = []
     seen = set()
     for checkpoint in checkpointer.list(config=None):
         tid = checkpoint.config["configurable"]["thread_id"]
-        if tid not in seen:
+        if tid not in seen and tid not in hidden:
             seen.add(tid)
             all_threads.append(tid)
     return all_threads

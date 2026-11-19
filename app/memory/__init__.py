@@ -6,6 +6,8 @@ from app.memory.stm import (
     update_summary,
     get_threads,
     get_thread_messages,
+    hide_thread,
+    get_hidden_threads,
 )
 from app.memory.ltm import LongTermMemory, ltm_store
 
@@ -17,6 +19,8 @@ __all__ = [
     "update_summary",
     "get_threads",
     "get_thread_messages",
+    "hide_thread",
+    "get_hidden_threads",
     "LongTermMemory",
     "ltm_store",
 ]

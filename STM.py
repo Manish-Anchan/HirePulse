@@ -10,6 +10,8 @@ from app.memory.stm import (
     count_tokens,
     get_thread_messages,
     get_threads,
+    hide_thread,
+    get_hidden_threads,
     safe_trim,
     update_summary,
 )
@@ -21,6 +23,8 @@ __all__ = [
     "count_tokens",
     "get_thread_messages",
     "get_threads",
+    "hide_thread",
+    "get_hidden_threads",
     "safe_trim",
     "update_summary",
 ]
