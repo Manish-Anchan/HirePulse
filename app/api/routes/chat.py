@@ -24,7 +24,17 @@ def chat_stream(req: ChatRequest):
                 stream_mode="messages",
             ):
                 if isinstance(chunk, AIMessageChunk) and chunk.content:
-                    yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
+                    content = chunk.content
+                    if isinstance(content, list):
+                        text = "".join(
+                            b if isinstance(b, str) else b.get("text", "")
+                            for b in content
+                            if isinstance(b, (str, dict))
+                        )
+                    else:
+                        text = str(content)
+                    if text:
+                        yield f"data: {json.dumps({'type': 'token', 'content': text})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'thread_id': thread_id})}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"

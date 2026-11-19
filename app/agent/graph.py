@@ -11,13 +11,26 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
-try:
-    from langfuse.langchain import CallbackHandler
-    langfuse_handler = CallbackHandler()
-except Exception:
-    langfuse_handler = None
+from app.config import (
+    LANGFUSE_HOST,
+    LANGFUSE_PUBLIC_KEY,
+    LANGFUSE_SECRET_KEY,
+    MODEL_NAME,
+    OPENR_API,
+    OPENROUTER_BASE_URL,
+)
 
-from app.config import MODEL_NAME, OPENR_API, OPENROUTER_BASE_URL
+langfuse_handler = None
+if LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY:
+    try:
+        from langfuse.langchain import CallbackHandler
+        langfuse_handler = CallbackHandler(
+            public_key=LANGFUSE_PUBLIC_KEY,
+            secret_key=LANGFUSE_SECRET_KEY,
+            host=LANGFUSE_HOST or "https://cloud.langfuse.com",
+        )
+    except Exception:
+        langfuse_handler = None
 from app.memory.stm import (
     checkpointer,
     convo,
@@ -81,7 +94,13 @@ def Chatnode(state: convo, config: Optional[RunnableConfig] = None):
     active_msgs = [SystemMessage(content=prompt)] + trimmed_msgs
 
     callbacks = [langfuse_handler] if langfuse_handler else []
-    response = model_with_tools.invoke(active_msgs, config={"callbacks": callbacks})
+    try:
+        response = model_with_tools.invoke(active_msgs, config={"callbacks": callbacks})
+    except Exception:
+        if callbacks:
+            response = model_with_tools.invoke(active_msgs)
+        else:
+            raise
     return {
         "messages": [response],
         "summary": summary,
