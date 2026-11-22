@@ -1,4 +1,4 @@
-import sqlite3
+import logging
 from typing import Dict, List, Optional
 from typing_extensions import Annotated, TypedDict
 
@@ -9,10 +9,14 @@ from langchain_core.messages import (
     SystemMessage,
     trim_messages,
 )
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph.message import add_messages
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
-from app.config import DB_PATH
+from app.config import DATABASE_URL
+
+logger = logging.getLogger(__name__)
 
 
 # 1. State Schema for Short-Term / Working Memory
@@ -22,18 +26,37 @@ class convo(TypedDict, total=False):
     summarized_index: int
 
 
-# 2. Checkpointer setup (SQLite persistence scoped to thread_id)
-conn = sqlite3.connect(database=str(DB_PATH), check_same_thread=False)
-with conn:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS hidden_threads (
-            thread_id TEXT PRIMARY KEY,
-            hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-checkpointer = SqliteSaver(conn=conn)
+# 2. Checkpointer setup (PostgreSQL persistence scoped to thread_id)
+pool = ConnectionPool(
+    conninfo=DATABASE_URL,
+    max_size=20,
+    open=True,
+    kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+)
+conn = pool  # Backwards compatibility
+
+checkpointer = PostgresSaver(conn=pool)
+
+
+def init_db() -> None:
+    """Initialize PostgresSaver checkpoint migrations and metadata tables."""
+    try:
+        checkpointer.setup()
+        with pool.connection() as c:
+            with c.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS hidden_threads (
+                        thread_id TEXT PRIMARY KEY,
+                        hidden_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+    except Exception as exc:
+        logger.warning("PostgresSaver initialization warning: %s", exc)
+
+
+init_db()
 
 
 # 3. Token estimation helper
@@ -102,32 +125,38 @@ def safe_trim(msgs: list[BaseMessage], max_tokens: int = 2500) -> list[BaseMessa
 # 6. Thread retrieval & soft-delete helpers
 def hide_thread(thread_id: str) -> None:
     """Soft-delete: hide a thread from the frontend while preserving history in the database."""
-    with conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO hidden_threads (thread_id) VALUES (?)",
-            (str(thread_id),),
-        )
+    with pool.connection() as c:
+        with c.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO hidden_threads (thread_id) VALUES (%s)
+                ON CONFLICT (thread_id) DO NOTHING
+                """,
+                (str(thread_id),),
+            )
 
 
 def get_hidden_threads() -> set[str]:
     """Retrieve all thread IDs that have been hidden/removed from the frontend."""
-    with conn:
-        cur = conn.cursor()
-        cur.execute("SELECT thread_id FROM hidden_threads")
-        return {row[0] for row in cur.fetchall()}
+    with pool.connection() as c:
+        with c.cursor() as cur:
+            cur.execute("SELECT thread_id FROM hidden_threads")
+            rows = cur.fetchall()
+            return {r["thread_id"] if isinstance(r, dict) else r[0] for r in rows}
 
 
 def get_threads(include_hidden: bool = False) -> list[str]:
-    """List unique thread IDs recorded in the SQLite checkpointer, excluding hidden threads by default."""
+    """List unique thread IDs recorded in the checkpointer, excluding hidden threads by default."""
     hidden = set() if include_hidden else get_hidden_threads()
-    all_threads = []
-    seen = set()
-    for checkpoint in checkpointer.list(config=None):
-        tid = checkpoint.config["configurable"]["thread_id"]
-        if tid not in seen and tid not in hidden:
-            seen.add(tid)
-            all_threads.append(tid)
-    return all_threads
+    with pool.connection() as c:
+        with c.cursor() as cur:
+            cur.execute("SELECT DISTINCT thread_id FROM checkpoints")
+            rows = cur.fetchall()
+            all_threads = [
+                r["thread_id"] if isinstance(r, dict) else r[0]
+                for r in rows
+            ]
+            return [tid for tid in all_threads if tid not in hidden]
 
 
 def get_thread_messages(chatbot, thread_id: str) -> list[dict]:

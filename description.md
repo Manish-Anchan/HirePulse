@@ -11,7 +11,7 @@ flowchart TD
     UserClient([Client / Frontend React UI]) -->|HTTP / SSE| FastAPIServer["FastAPI Server (app/main.py & app/api/routes/)"]
     
     subgraph Storage & Persistence
-        SQLiteDB[(SQLite: Database/Chat_database.db)]
+        PostgresDB[(PostgreSQL Container: hirepulse-postgres)]
         ChromaStore[(ChromaDB: Database/chroma_db)]
         FileStore[(Uploads: Database/uploads)]
     end
@@ -20,7 +20,7 @@ flowchart TD
         FastAPIServer --> AgentGraph["LangGraph Workflow (app/agent/graph.py)"]
         AgentGraph <--> STM["Short-Term Memory (app/memory/stm.py)"]
         AgentGraph <--> LTM["Long-Term Memory (app/memory/ltm.py)"]
-        STM <--> SQLiteDB
+        STM <--> PostgresDB
         LTM <--> ChromaStore
     end
 
@@ -43,7 +43,8 @@ flowchart TD
 #### [app/config.py](file:///home/prime/PRIME/Chatbot/app/config.py)
 * **Purpose**: Single source of truth for runtime configurations, filesystem paths, API keys, and environment variables.
 * **Key Components**:
-  * `BASE_DIR`, `DB_DIR`, `PERSIST_DIR`, `DOCS_DIR`, `DB_PATH`: Resolves absolute paths for SQLite and ChromaDB persistence, automatically creating missing directories.
+  * `BASE_DIR`, `DB_DIR`, `PERSIST_DIR`, `DOCS_DIR`: Resolves absolute paths for ChromaDB persistence and file uploads, automatically creating missing directories.
+  * `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `DATABASE_URL`: PostgreSQL connection parameters.
   * `ALLOWED_EXTENSIONS`: Whitelist of supported document extensions (`.pdf`, `.csv`, `.md`, `.markdown`, `.txt`, `.json`, `.py`, `.log`).
   * `MAX_FILE_SIZE`: Restricts uploaded files to 25 MB.
   * `OPENR_API`, `GEMINI_API`, `OPENAI_API_KEY`: API keys loaded via `python-dotenv`.
@@ -212,11 +213,11 @@ flowchart TD
 * **Purpose**: Short-Term / Working Memory management.
 * **Key Components**:
   * `convo`: `TypedDict` state schema tracking `messages`, rolling `summary`, and `summarized_index`.
-  * `checkpointer`: `SqliteSaver` instance connected to `Database/Chat_database.db`.
+  * `checkpointer`: `PostgresSaver` instance connected to PostgreSQL via `ConnectionPool`.
   * `count_tokens(messages)`: Character-based token estimator.
   * `update_summary(existing_summary, new_msgs, model)`: Incrementally condenses historical messages into an updated summary (<150 words).
   * `safe_trim(msgs, max_tokens=2500)`: Uses LangChain's `trim_messages` to ensure context never exceeds LLM token limits while keeping system messages intact.
-  * `get_threads()` & `get_thread_messages()`: Helpers for reading checkpoints from SQLite.
+  * `get_threads()` & `get_thread_messages()`: Helpers for reading checkpoints from PostgreSQL.
 * **Current Status**: Active and tested.
 
 #### [app/memory/ltm.py](file:///home/prime/PRIME/Chatbot/app/memory/ltm.py)
@@ -276,7 +277,7 @@ flowchart TD
 | **LangGraph Reasoning Graph** | `app/agent/graph.py` | StateGraph execution & checkpointer integration | 🟢 Operational |
 | **Prompt Engineering** | `app/agent/prompts.py` | Dynamic resume & memory synthesis | 🟢 Operational |
 | **Hybrid RAG Pipeline** | `app/rag/pipeline.py` | BM25 + Chroma + FlashRank tests passing | 🟢 Operational |
-| **Short-Term Memory (STM)** | `app/memory/stm.py` | SQLite checkpointing & token trimming tested | 🟢 Operational |
+| **Short-Term Memory (STM)** | `app/memory/stm.py` | PostgreSQL checkpointing & token trimming tested | 🟢 Operational |
 | **Long-Term Memory (LTM)** | `app/memory/ltm.py` | Chroma deduplication & CRUD active | 🟢 Operational |
 | **Root Compatibility Shims** | `server.py`, `chat_app.py`, etc. | Verified with existing tests and imports | 🟢 Operational |
 | **Job Search & Gmail MCP** | `app/agent/tools/` (Roadmap) | Specified in README.md & ready for implementation | 🟡 Roadmap (Phase 2 & 3) |
